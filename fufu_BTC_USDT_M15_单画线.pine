@@ -67,20 +67,25 @@ pvL = ta.pivotlow(low,  pivL, pivR)
 if not na(pvH)
     array.push(phB, bar_index - pivR)
     array.push(phP, pvH)
-    int cutH = bar_index - lookbk
-    while array.size(phB) > 0 and array.get(phB, 0) < cutH
-        array.shift(phB)
-        array.shift(phP)
 
 if not na(pvL)
     array.push(plB, bar_index - pivR)
     array.push(plP, pvL)
-    int cutL = bar_index - lookbk
-    while array.size(plB) > 0 and array.get(plB, 0) < cutL
-        array.shift(plB)
-        array.shift(plP)
+
+// 每根K线都裁剪，保证「最老枢轴」严格不早于 bar_index - lookbk；
+// 这样 f_probe 里 high[last - j] 的偏移上界 = lookbk + pivR，远小于 max_bars_back。
+int cutB = bar_index - lookbk
+while array.size(phB) > 0 and array.get(phB, 0) < cutB
+    array.shift(phB)
+    array.shift(phP)
+while array.size(plB) > 0 and array.get(plB, 0) < cutB
+    array.shift(plB)
+    array.shift(plP)
 
 // ======================= 核心：触及 / 测试 / 穿越 探测 =======================
+// ★注意：Pine 的 high[k] 是「往回 k 根」的偏移，不是绝对K线序号。
+//   本函数里 j / k / m 都是从枢轴表里取的绝对序号（bar_index），
+//   所以取历史一律写成 high[last - j]（last = bar_index），把序号换算成偏移。
 f_probe(int pb, float px, bool isHigh, float tol, float brkP, float rejP, int win, int gapc) =>
     int   touched = 0
     int   tests   = 0
@@ -88,17 +93,17 @@ f_probe(int pb, float px, bool isHigh, float tol, float brkP, float rejP, int wi
     int   last    = bar_index
     int   j       = pb + pivR
     while j <= last
-        bool inband = isHigh ? high[j] >= px * (1 - tol) : low[j] <= px * (1 + tol)
+        bool inband = isHigh ? high[last - j] >= px * (1 - tol) : low[last - j] <= px * (1 + tol)
         if not inband
             j += 1
         else
             int   k   = j
-            float ext = isHigh ? high[j] : low[j]
+            float ext = isHigh ? high[last - j] : low[last - j]
             while k <= last
-                bool hit = isHigh ? high[k] >= px * (1 - tol) : low[k] <= px * (1 + tol)
+                bool hit = isHigh ? high[last - k] >= px * (1 - tol) : low[last - k] <= px * (1 + tol)
                 if not hit
                     break
-                ext := isHigh ? math.max(ext, high[k]) : math.min(ext, low[k])
+                ext := isHigh ? math.max(ext, high[last - k]) : math.min(ext, low[last - k])
                 k += 1
             touched += 1
             float over = isHigh ? (ext - px) / px : (px - ext) / px
@@ -107,9 +112,9 @@ f_probe(int pb, float px, bool isHigh, float tol, float brkP, float rejP, int wi
             else
                 int endi = math.min(last, k + win - 1)
                 if endi > k - 1
-                    float back = isHigh ? low[k] : high[k]
+                    float back = isHigh ? low[last - k] : high[last - k]
                     for m = k to endi
-                        back := isHigh ? math.min(back, low[m]) : math.max(back, high[m])
+                        back := isHigh ? math.min(back, low[last - m]) : math.max(back, high[last - m])
                     float rev = isHigh ? (px - back) / px : (back - px) / px
                     if rev >= rejP
                         tests += 1
