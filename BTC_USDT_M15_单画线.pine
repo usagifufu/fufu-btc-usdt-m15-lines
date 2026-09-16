@@ -1,0 +1,305 @@
+//@version=5
+indicator("BTCUSDT 15m 单画线", shorttitle = "BTC M15 单画线", overlay = true, max_bars_back = 2400, max_lines_count = 500, max_labels_count = 500)
+
+// ======================= ① 显示哪些类别 =======================
+gA = "① 显示哪些类别（关掉即不画）"
+inc_proven_res   = input.bool(true, "已证实的 阻力 · 供给卖（测试≥1）", group = gA)
+inc_turn_res     = input.bool(true, "变节者 阻力 · 供给卖",            group = gA)
+inc_weak_res     = input.bool(true, "弱不牢固的 阻力 · 供给卖",         group = gA)
+inc_untested_res = input.bool(true, "未经测试的 阻力 · 供给卖",         group = gA)
+inc_proven_sup   = input.bool(true, "已证实的 支撑 · 需求买（测试≥1）", group = gA)
+inc_turn_sup     = input.bool(true, "变节者 支撑 · 需求买",            group = gA)
+inc_weak_sup     = input.bool(true, "弱不牢固的 支撑 · 需求买",         group = gA)
+inc_untested_sup = input.bool(true, "未经测试的 支撑 · 需求买",         group = gA)
+
+// ======================= ② 识别参数 =======================
+gP = "② 识别参数"
+pivL    = input.int(6,     "摆动点 左K线数", minval = 1, maxval = 50, group = gP, tooltip = "左右各 N 根内最高/最低才算摆动点")
+pivR    = input.int(6,     "摆动点 右K线数", minval = 1, maxval = 50, group = gP)
+lookbk  = input.int(900,   "识别回看根数",   minval = 50, maxval = 1400, group = gP, tooltip = "15m × 900 ≈ 9.4 天；上限 1400 与 max_bars_back = 2400 对齐")
+tolPct  = input.float(0.40, "回踩容差 %",     minval = 0.0, maxval = 5.0, step = 0.05, group = gP, tooltip = "价格走进距该位多少 % 以内即算“触及”")
+brkPct  = input.float(0.60, "有效穿越 %",     minval = 0.0, maxval = 10.0, step = 0.05, group = gP, tooltip = "超出该位这个幅度以上算“被击穿”")
+rejPct  = input.float(1.00, "有效拒绝 %",     minval = 0.0, maxval = 10.0, step = 0.05, group = gP, tooltip = "触及后反向走出这个幅度算一次“有效测试”（该位守住了）")
+rejWin  = input.int(24,    "拒绝观察K线数",   minval = 2, maxval = 100, group = gP, tooltip = "触及后观察多少根判断是否反转")
+gapK    = input.int(6,     "独立簇间隔K线数", minval = 1, maxval = 100, group = gP, tooltip = "两次触及相隔少于这么多根算同一次")
+nearPct = input.float(0.20, "贴近现价忽略 %", minval = 0.0, maxval = 2.0, step = 0.05, group = gP, tooltip = "离现价太近的摆动点不画（噪声）")
+
+// ======================= ③ 数量与排序 =======================
+gN = "③ 数量与排序"
+maxCat = input.int(3,        "每类最多几条",     minval = 1, maxval = 6,  group = gN, tooltip = "四类 × 两侧，每类先各自限额")
+maxUp  = input.int(6,        "现价上方最多几条", minval = 1, maxval = 12, group = gN)
+maxDn  = input.int(4,        "现价下方最多几条", minval = 1, maxval = 12, group = gN)
+gapPct = input.float(0.35,   "同类最小间距 %",   minval = 0.0, maxval = 3.0, step = 0.05, group = gN, tooltip = "同侧两条线价位差小于此百分比时只留一条")
+rankBy = input.string("综合", "排序方式", options = ["综合", "距离"], group = gN, tooltip = "综合 = 按档次分排序（测试次数优先）；距离 = 只按离现价远近")
+rankOrd = input.string("测试>变节者>已证实>弱>未测", "档次顺序", options = ["测试>变节者>已证实>弱>未测", "测试>变节者>已证实>未测>弱", "测试>变节者>未测>已证实>弱", "测试>未测>变节者>已证实>弱"], group = gN, tooltip = "档次分 = 4×测试次数 + 本档权重；靠前的权重更高")
+
+// ======================= ④ 手动价位 =======================
+gM = "④ 手动价位（追加，可留空）"
+manualStr = input.string("", "价格|标签;价格|标签", group = gM, tooltip = "例：80445|MT5阻力;75609|MT5支撑。留空则只用自动识别")
+manCol    = input.color(#d29922, "手动线颜色", group = gM)
+
+// ======================= ⑤ 颜色与样式 =======================
+gC = "⑤ 颜色与样式"
+cRes   = input.color(#f85149, "阻力 线（红）",      group = gC)
+cSup   = input.color(#3fb950, "支撑 线（绿）",      group = gC)
+cWeakR = input.color(#ffa657, "弱不牢固 阻力（橙）", group = gC)
+cWeakS = input.color(#56d364, "弱不牢固 支撑（浅绿）", group = gC)
+lw     = input.int(1,   "线宽",           minval = 1, maxval = 4,   group = gC)
+extBar = input.int(60,  "向右延长K线数",  minval = 0, maxval = 300, group = gC, tooltip = "15m × 60 = 15 小时")
+showLbl = input.bool(true, "显示右侧中文标签", group = gC)
+
+// ======================= 摆动点记录 =======================
+var int[]   phB = array.new_int()
+var float[] phP = array.new_float()
+var int[]   plB = array.new_int()
+var float[] plP = array.new_float()
+
+pvH = ta.pivothigh(high, pivL, pivR)
+pvL = ta.pivotlow(low,  pivL, pivR)
+
+if not na(pvH)
+    array.push(phB, bar_index - pivR)
+    array.push(phP, pvH)
+    int cutH = bar_index - lookbk
+    while array.size(phB) > 0 and array.get(phB, 0) < cutH
+        array.shift(phB)
+        array.shift(phP)
+
+if not na(pvL)
+    array.push(plB, bar_index - pivR)
+    array.push(plP, pvL)
+    int cutL = bar_index - lookbk
+    while array.size(plB) > 0 and array.get(plB, 0) < cutL
+        array.shift(plB)
+        array.shift(plP)
+
+// ======================= 核心：触及 / 测试 / 穿越 探测 =======================
+f_probe(int pb, float px, bool isHigh, float tol, float brkP, float rejP, int win, int gapc) =>
+    int   touched = 0
+    int   tests   = 0
+    int   brk     = 0
+    int   last    = bar_index
+    int   j       = pb + pivR
+    while j <= last
+        bool inband = isHigh ? high[j] >= px * (1 - tol) : low[j] <= px * (1 + tol)
+        if not inband
+            j += 1
+        else
+            int   k   = j
+            float ext = isHigh ? high[j] : low[j]
+            while k <= last
+                bool hit = isHigh ? high[k] >= px * (1 - tol) : low[k] <= px * (1 + tol)
+                if not hit
+                    break
+                ext := isHigh ? math.max(ext, high[k]) : math.min(ext, low[k])
+                k += 1
+            touched += 1
+            float over = isHigh ? (ext - px) / px : (px - ext) / px
+            if over >= brkP
+                brk += 1
+            else
+                int endi = math.min(last, k + win - 1)
+                if endi > k - 1
+                    float back = isHigh ? low[k] : high[k]
+                    for m = k to endi
+                        back := isHigh ? math.min(back, low[m]) : math.max(back, high[m])
+                    float rev = isHigh ? (px - back) / px : (back - px) / px
+                    if rev >= rejP
+                        tests += 1
+            j := k + gapc
+    [touched, tests, brk]
+
+// ======================= 画线与容器 =======================
+var line[]  LNS = array.new_line()
+var label[] LBS = array.new_label()
+
+f_clearAll() =>
+    if array.size(LNS) > 0
+        for i = 0 to array.size(LNS) - 1
+            line.delete(array.get(LNS, i))
+        array.clear(LNS)
+    if array.size(LBS) > 0
+        for i = 0 to array.size(LBS) - 1
+            label.delete(array.get(LBS, i))
+        array.clear(LBS)
+
+f_hLine(int x0, float y, string txt, color c, bool solid) =>
+    line ln = line.new(x0, y, bar_index + extBar, y, color = c, width = lw, style = solid ? line.style_solid : line.style_dashed)
+    array.push(LNS, ln)
+    if showLbl
+        label lb = label.new(bar_index + extBar, y, text = txt + "  " + str.tostring(y, format.mintick), style = label.style_label_left, color = color.new(color.black, 100), textcolor = c, size = size.small, textalign = text.align_left)
+        array.push(LBS, lb)
+
+// ======================= 挑选：按档次排序 + 去重 + 限额 =======================
+f_pick(int[] pool, float[] cP, int[] cG, int want, float gapF, float cc, bool byDist, bool useSide, bool above) =>
+    int[] out = array.new_int()
+    int n = array.size(pool)
+    if n > 0
+        bool[] used = array.new_bool(n, false)
+        for _t = 0 to n - 1
+            int bi = -1
+            for j = 0 to n - 1
+                if not array.get(used, j)
+                    int idx = array.get(pool, j)
+                    float y = array.get(cP, idx)
+                    bool okSide = not useSide or (above ? y >= cc : y < cc)
+                    if okSide
+                        if bi < 0
+                            bi := j
+                        else
+                            int idxb = array.get(pool, bi)
+                            float yb = array.get(cP, idxb)
+                            int gb = array.get(cG, idxb)
+                            int gj = array.get(cG, idx)
+                            bool better = byDist ? math.abs(y - cc) < math.abs(yb - cc) : (gj > gb or (gj == gb and math.abs(y - cc) < math.abs(yb - cc)))
+                            if better
+                                bi := j
+            if bi >= 0
+                array.set(used, bi, true)
+                if array.size(out) < want
+                    int idx = array.get(pool, bi)
+                    float px = array.get(cP, idx)
+                    bool ok = true
+                    if array.size(out) > 0
+                        for m = 0 to array.size(out) - 1
+                            float q = array.get(cP, array.get(out, m))
+                            if math.abs(px - q) / q <= gapF
+                                ok := false
+                    if ok
+                        array.push(out, idx)
+    out
+
+// 类别代码 → 档次分（4×测试次数 + 本档权重）
+f_grade(int k, int t, int wv, int wc, int wu, int ww) =>
+    int g = 4 * t
+    g += (k == 3 or k == 4) ? wv : (k == 1 or k == 6) ? wc : (k == 2 or k == 8) ? wu : ww
+    g
+
+// 类别代码 → 后缀文字
+f_sub(int k) =>
+    k == 1 ? "已证实的 阻力 · 供给卖" : k == 2 ? "未经测试的 阻力 · 供给卖" : k == 3 ? "变节者 支撑 · 需求买" : k == 4 ? "变节者 阻力 · 供给卖" : k == 5 ? "弱不牢固的 阻力 · 供给卖" : k == 6 ? "已证实的 支撑 · 需求买" : k == 7 ? "弱不牢固的 支撑 · 需求买" : "未经测试的 支撑 · 需求买"
+
+// 类别代码 → 颜色
+f_col(int k) =>
+    k == 5 ? cWeakR : k == 7 ? cWeakS : (k == 1 or k == 2 or k == 4) ? cRes : cSup
+
+// 类别代码 → 是否实线（已证实 = 实线）
+f_solid(int k) =>
+    k == 1 or k == 6
+
+// 类别代码 → 是否启用
+f_on(int k) =>
+    k == 1 ? inc_proven_res : k == 2 ? inc_untested_res : k == 3 ? inc_turn_sup : k == 4 ? inc_turn_res : k == 5 ? inc_weak_res : k == 6 ? inc_proven_sup : k == 7 ? inc_weak_sup : inc_untested_sup
+
+// ======================= 主逻辑（只在最后一根K线重算重画） =======================
+if barstate.islast
+    f_clearAll()
+
+    float close_ = close
+    float tol    = tolPct / 100.0
+    float gapF   = gapPct / 100.0
+    float nearF  = nearPct / 100.0
+    float brkP   = brkPct / 100.0
+    float rejP   = rejPct / 100.0
+    bool  byDist = rankBy == "距离"
+    bool  o1 = rankOrd == "测试>变节者>已证实>弱>未测"
+    bool  o2 = rankOrd == "测试>变节者>已证实>未测>弱"
+    bool  o3 = rankOrd == "测试>变节者>未测>已证实>弱"
+    int   wv = o1 or o2 or o3 ? 3 : 2
+    int   wc = o1 or o2 ? 2 : 1
+    int   wu = o1 ? 0 : o2 ? 1 : o3 ? 2 : 3
+    int   ww = o1 ? 1 : 0
+
+    float[] cP = array.new_float()
+    int[]   cK = array.new_int()
+    int[]   cT = array.new_int()
+    int[]   cG = array.new_int()
+
+    // ---- 摆动高点 ----
+    if array.size(phP) > 0
+        for i = 0 to array.size(phP) - 1
+            float px = array.get(phP, i)
+            int   pb = array.get(phB, i)
+            if math.abs(px - close_) / close_ > nearF
+                if px < close_
+                    if inc_turn_sup
+                        array.push(cP, px)
+                        array.push(cK, 3)
+                        array.push(cT, 0)
+                        array.push(cG, f_grade(3, 0, wv, wc, wu, ww))
+                else
+                    [tc, ts, bk] = f_probe(pb, px, true, tol, brkP, rejP, rejWin, gapK)
+                    int kd = bk >= 1 and tc >= 1 ? 4 : ts >= 1 ? 1 : tc >= 1 ? 5 : 2
+                    int tv = kd == 1 ? ts : 0
+                    if f_on(kd)
+                        array.push(cP, px)
+                        array.push(cK, kd)
+                        array.push(cT, tv)
+                        array.push(cG, f_grade(kd, tv, wv, wc, wu, ww))
+
+    // ---- 摆动低点 ----
+    if array.size(plP) > 0
+        for i = 0 to array.size(plP) - 1
+            float px = array.get(plP, i)
+            int   pb = array.get(plB, i)
+            if math.abs(px - close_) / close_ > nearF
+                if px > close_
+                    if inc_turn_res
+                        array.push(cP, px)
+                        array.push(cK, 4)
+                        array.push(cT, 0)
+                        array.push(cG, f_grade(4, 0, wv, wc, wu, ww))
+                else
+                    [tc, ts, bk] = f_probe(pb, px, false, tol, brkP, rejP, rejWin, gapK)
+                    int kd = bk >= 1 and tc >= 1 ? 3 : ts >= 1 ? 6 : tc >= 1 ? 7 : 8
+                    int tv = kd == 6 ? ts : 0
+                    if f_on(kd)
+                        array.push(cP, px)
+                        array.push(cK, kd)
+                        array.push(cT, tv)
+                        array.push(cG, f_grade(kd, tv, wv, wc, wu, ww))
+
+    // ---- 第一轮：每类各自限额 + 间距去重 ----
+    int[] sel = array.new_int()
+    for k = 1 to 8
+        int[] pool = array.new_int()
+        if array.size(cK) > 0
+            for i = 0 to array.size(cK) - 1
+                if array.get(cK, i) == k
+                    array.push(pool, i)
+        int[] got = f_pick(pool, cP, cG, maxCat, gapF, close_, byDist, false, false)
+        if array.size(got) > 0
+            for i = 0 to array.size(got) - 1
+                array.push(sel, array.get(got, i))
+
+    // ---- 第二轮：现价上方 / 下方各自限额 ----
+    int[] upSel = f_pick(sel, cP, cG, maxUp, gapF, close_, byDist, true, true)
+    int[] dnSel = f_pick(sel, cP, cG, maxDn, gapF, close_, byDist, true, false)
+
+    int x0 = math.max(bar_index - lookbk, 0)
+    if array.size(upSel) > 0
+        for i = 0 to array.size(upSel) - 1
+            int idx = array.get(upSel, i)
+            int kd = array.get(cK, idx)
+            float px = array.get(cP, idx)
+            string txt = array.get(cT, idx) > 0 ? f_sub(kd) + "，测试=" + str.tostring(array.get(cT, idx)) : f_sub(kd)
+            f_hLine(x0, px, txt, f_col(kd), f_solid(kd))
+    if array.size(dnSel) > 0
+        for i = 0 to array.size(dnSel) - 1
+            int idx = array.get(dnSel, i)
+            int kd = array.get(cK, idx)
+            float px = array.get(cP, idx)
+            string txt = array.get(cT, idx) > 0 ? f_sub(kd) + "，测试=" + str.tostring(array.get(cT, idx)) : f_sub(kd)
+            f_hLine(x0, px, txt, f_col(kd), f_solid(kd))
+
+    // ---- 手动价位追加 ----
+    if str.length(manualStr) > 0
+        string[] items = str.split(manualStr, ";")
+        for i = 0 to array.size(items) - 1
+            string it = str.replace_all(array.get(items, i), " ", "")
+            if str.length(it) > 0
+                string[] kv = str.split(it, "|")
+                float y = str.tonumber(array.get(kv, 0))
+                if not na(y)
+                    string t = array.size(kv) > 1 ? array.get(kv, 1) : "手动价位"
+                    f_hLine(x0, y, t, manCol, true)
