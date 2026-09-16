@@ -75,13 +75,24 @@ if not na(pvL)
 // 每根K线都裁剪，保证「最老枢轴」严格不早于 bar_index - lookbk。
 // 于是 f_probe 里 j 的最小值 = (bar_index - lookbk) + pivR，动态偏移上界 = lookbk - pivR
 // （默认 900-6=894，最坏 1400-6=1394），均远小于 max_bars_back = 2400。
+// ★注意：Pine 的 and / or 不做短路求值，两边永远都算。
+//   所以不能写 while array.size(x) > 0 and array.get(x, 0) < cut ——
+//   数组为空时 array.get 照跑，直接 Index 0 is out of bounds。
+//   正确做法：用 if 先挡掉空数组，循环条件里只放 array.get（进循环时 size 必然 > 0），
+//   并在循环体内 shift 完之后判断是否已空、是则 break（避免下一轮再算条件）。
 int cutB = bar_index - lookbk
-while array.size(phB) > 0 and array.get(phB, 0) < cutB
-    array.shift(phB)
-    array.shift(phP)
-while array.size(plB) > 0 and array.get(plB, 0) < cutB
-    array.shift(plB)
-    array.shift(plP)
+if array.size(phB) > 0
+    while array.get(phB, 0) < cutB
+        array.shift(phB)
+        array.shift(phP)
+        if array.size(phB) == 0
+            break
+if array.size(plB) > 0
+    while array.get(plB, 0) < cutB
+        array.shift(plB)
+        array.shift(plP)
+        if array.size(plB) == 0
+            break
 
 // ======================= 核心：触及 / 测试 / 穿越 探测 =======================
 // ★注意：Pine 的 high[k] 是「往回 k 根」的偏移，不是绝对K线序号。
@@ -314,7 +325,11 @@ if barstate.islast
                 string[] kv = str.split(it, "|")
                 float y = str.tonumber(array.get(kv, 0))
                 if not na(y)
-                    string t = array.size(kv) > 1 ? array.get(kv, 1) : "手动价位"
+                    // 不写成 array.size(kv) > 1 ? array.get(kv, 1) : "手动价位"：
+                    // 万一三元两分支都求值，kv 只有价位的写法就会越界。用 if 显式赋值最稳。
+                    string t = "手动价位"
+                    if array.size(kv) > 1
+                        t := array.get(kv, 1)
                     f_hLine(x0, y, t, manCol, true)
 
     // ---- 常驻配色图例 + 免责声明（图表右下角，始终显示） ----
