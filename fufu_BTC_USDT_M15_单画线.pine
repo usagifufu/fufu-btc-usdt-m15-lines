@@ -1,16 +1,16 @@
 //@version=5
 indicator("fufu BTCUSDT 15m 单画线", shorttitle = "fufu BTC M15", overlay = true, max_bars_back = 2400, max_lines_count = 500, max_labels_count = 500)
 
-// ======================= ① 显示哪些类别 =======================
-gA = "① 显示哪些类别（关掉即不画）"
-inc_proven_res   = input.bool(true, "已证实的 阻力 · 供给卖（测试≥1）", group = gA)
-inc_turn_res     = input.bool(true, "变节者 阻力 · 供给卖",            group = gA)
-inc_weak_res     = input.bool(true, "弱不牢固的 阻力 · 供给卖",         group = gA)
-inc_untested_res = input.bool(true, "未经测试的 阻力 · 供给卖",         group = gA)
-inc_proven_sup   = input.bool(true, "已证实的 支撑 · 需求买（测试≥1）", group = gA)
-inc_turn_sup     = input.bool(true, "变节者 支撑 · 需求买",            group = gA)
-inc_weak_sup     = input.bool(true, "弱不牢固的 支撑 · 需求买",         group = gA)
-inc_untested_sup = input.bool(true, "未经测试的 支撑 · 需求买",         group = gA)
+// ======================= ① 显示哪些类别（【做多·红】/【做空·绿】） =======================
+gA = "① 显示哪些类别（★做多=红线 / ★做空=绿线）"
+inc_proven_sup   = input.bool(true, "【做多·红】已证实的 支撑 · 需求买（测试≥1）", group = gA)
+inc_turn_sup     = input.bool(true, "【做多·红】变节者 支撑 · 需求买",            group = gA)
+inc_weak_sup     = input.bool(true, "【做多·红】弱不牢固的 支撑 · 需求买",         group = gA)
+inc_untested_sup = input.bool(true, "【做多·红】未经测试的 支撑 · 需求买",         group = gA)
+inc_proven_res   = input.bool(true, "【做空·绿】已证实的 阻力 · 供给卖（测试≥1）", group = gA)
+inc_turn_res     = input.bool(true, "【做空·绿】变节者 阻力 · 供给卖",            group = gA)
+inc_weak_res     = input.bool(true, "【做空·绿】弱不牢固的 阻力 · 供给卖",         group = gA)
+inc_untested_res = input.bool(true, "【做空·绿】未经测试的 阻力 · 供给卖",         group = gA)
 
 // ======================= ② 识别参数 =======================
 gP = "② 识别参数"
@@ -40,10 +40,11 @@ manCol    = input.color(#d29922, "手动线颜色", group = gM)
 
 // ======================= ⑤ 颜色与样式 =======================
 gC = "⑤ 颜色与样式"
-cRes   = input.color(#f85149, "阻力 线（红）",      group = gC)
-cSup   = input.color(#3fb950, "支撑 线（绿）",      group = gC)
-cWeakR = input.color(#ffa657, "弱不牢固 阻力（橙）", group = gC)
-cWeakS = input.color(#56d364, "弱不牢固 支撑（浅绿）", group = gC)
+cRes   = input.color(#3fb950, "做空 阻力线（绿）",   group = gC)
+cSup   = input.color(#f85149, "做多 支撑线（红）",   group = gC)
+cWeakR = input.color(#56d364, "做空 弱阻力线（浅绿）", group = gC)
+cWeakS = input.color(#ffa657, "做多 弱支撑线（橙）", group = gC)
+showLeg = input.bool(true, "显示配色图例", group = gC, tooltip = "在图右下角常驻一行说明：红线 = 做多，绿线 = 做空")
 lw     = input.int(1,   "线宽",           minval = 1, maxval = 4,   group = gC)
 extBar = input.int(60,  "向右延长K线数",  minval = 0, maxval = 300, group = gC, tooltip = "15m × 60 = 15 小时")
 showLbl = input.bool(true, "显示右侧中文标签", group = gC)
@@ -51,6 +52,7 @@ showLbl = input.bool(true, "显示右侧中文标签", group = gC)
 // ======================= 常驻免责声明锚点 =======================
 DISC_TXT = "⚠ 免责声明：本指标仅为技术分析辅助工具，不构成任何投资建议。加密货币波动极大，据此操作盈亏自负。"
 discLo   = ta.lowest(low, 500)
+discLo2  = ta.lowest(low, 100)
 discAtr  = ta.atr(14)
 
 // ======================= 摆动点记录 =======================
@@ -182,7 +184,7 @@ f_grade(int k, int t, int wv, int wc, int wu, int ww) =>
 
 // 类别代码 → 后缀文字
 f_sub(int k) =>
-    k == 1 ? "已证实的 阻力 · 供给卖" : k == 2 ? "未经测试的 阻力 · 供给卖" : k == 3 ? "变节者 支撑 · 需求买" : k == 4 ? "变节者 阻力 · 供给卖" : k == 5 ? "弱不牢固的 阻力 · 供给卖" : k == 6 ? "已证实的 支撑 · 需求买" : k == 7 ? "弱不牢固的 支撑 · 需求买" : "未经测试的 支撑 · 需求买"
+    k == 1 ? "已证实的 阻力 · 供给卖 · 做空" : k == 2 ? "未经测试的 阻力 · 供给卖 · 做空" : k == 3 ? "变节者 支撑 · 需求买 · 做多" : k == 4 ? "变节者 阻力 · 供给卖 · 做空" : k == 5 ? "弱不牢固的 阻力 · 供给卖 · 做空" : k == 6 ? "已证实的 支撑 · 需求买 · 做多" : k == 7 ? "弱不牢固的 支撑 · 需求买 · 做多" : "未经测试的 支撑 · 需求买 · 做多"
 
 // 类别代码 → 颜色
 f_col(int k) =>
@@ -309,8 +311,12 @@ if barstate.islast
                     string t = array.size(kv) > 1 ? array.get(kv, 1) : "手动价位"
                     f_hLine(x0, y, t, manCol, true)
 
-    // ---- 常驻免责声明（图表右下角，始终显示） ----
-    label dl = label.new(bar_index, discLo - discAtr * 2, text = DISC_TXT, style = label.style_label_left, color = color.new(color.black, 75), textcolor = color.gray, size = size.tiny, textalign = text.align_left)
+    // ---- 常驻配色图例 + 免责声明（图表右下角，始终显示） ----
+    float discY = math.min(math.min(discLo, discLo2), close) - discAtr * 1.5
+    if showLeg
+        label lg = label.new(bar_index, discY + discAtr * 1.3, text = "🔴 红线 = 支撑 · 做多（需求买，逢跌找买点）　｜　🟢 绿线 = 阻力 · 做空（供给卖，逢涨找卖点）", style = label.style_label_left, color = color.new(color.black, 80), textcolor = color.gray, size = size.tiny, textalign = text.align_left)
+        array.push(LBS, lg)
+    label dl = label.new(bar_index, discY, text = DISC_TXT, style = label.style_label_left, color = color.new(color.black, 75), textcolor = color.gray, size = size.tiny, textalign = text.align_left)
     array.push(LBS, dl)
 
 // ======================= 免责声明 =======================
