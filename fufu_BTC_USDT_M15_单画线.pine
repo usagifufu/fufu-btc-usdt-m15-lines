@@ -72,8 +72,9 @@ if not na(pvL)
     array.push(plB, bar_index - pivR)
     array.push(plP, pvL)
 
-// 每根K线都裁剪，保证「最老枢轴」严格不早于 bar_index - lookbk；
-// 这样 f_probe 里 high[last - j] 的偏移上界 = lookbk + pivR，远小于 max_bars_back。
+// 每根K线都裁剪，保证「最老枢轴」严格不早于 bar_index - lookbk。
+// 于是 f_probe 里 j 的最小值 = (bar_index - lookbk) + pivR，动态偏移上界 = lookbk - pivR
+// （默认 900-6=894，最坏 1400-6=1394），均远小于 max_bars_back = 2400。
 int cutB = bar_index - lookbk
 while array.size(phB) > 0 and array.get(phB, 0) < cutB
     array.shift(phB)
