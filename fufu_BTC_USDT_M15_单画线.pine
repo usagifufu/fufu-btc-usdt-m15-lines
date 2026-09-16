@@ -1,5 +1,5 @@
 //@version=5
-indicator("BTCUSDT 15m 单画线", shorttitle = "BTC M15 单画线", overlay = true, max_bars_back = 2400, max_lines_count = 500, max_labels_count = 500)
+indicator("fufu BTCUSDT 15m 单画线", shorttitle = "fufu BTC M15", overlay = true, max_bars_back = 2400, max_lines_count = 500, max_labels_count = 500)
 
 // ======================= ① 显示哪些类别 =======================
 gA = "① 显示哪些类别（关掉即不画）"
@@ -47,6 +47,11 @@ cWeakS = input.color(#56d364, "弱不牢固 支撑（浅绿）", group = gC)
 lw     = input.int(1,   "线宽",           minval = 1, maxval = 4,   group = gC)
 extBar = input.int(60,  "向右延长K线数",  minval = 0, maxval = 300, group = gC, tooltip = "15m × 60 = 15 小时")
 showLbl = input.bool(true, "显示右侧中文标签", group = gC)
+
+// ======================= 常驻免责声明锚点 =======================
+DISC_TXT = "⚠ 免责声明：本指标仅为技术分析辅助工具，不构成任何投资建议。加密货币波动极大，据此操作盈亏自负。"
+discLo   = ta.lowest(low, 500)
+discAtr  = ta.atr(14)
 
 // ======================= 摆动点记录 =======================
 var int[]   phB = array.new_int()
@@ -303,3 +308,13 @@ if barstate.islast
                 if not na(y)
                     string t = array.size(kv) > 1 ? array.get(kv, 1) : "手动价位"
                     f_hLine(x0, y, t, manCol, true)
+
+    // ---- 常驻免责声明（图表右下角，始终显示） ----
+    label dl = label.new(bar_index, discLo - discAtr * 2, text = DISC_TXT, style = label.style_label_left, color = color.new(color.black, 75), textcolor = color.gray, size = size.tiny, textalign = text.align_left)
+    array.push(LBS, dl)
+
+// ======================= 免责声明 =======================
+// 本脚本（fufu BTCUSDT 15m 单画线）仅为技术分析辅助工具，不构成任何投资建议、
+// 交易推荐或收益承诺。加密货币市场波动剧烈、风险极高，任何依据本脚本作出的
+// 交易决策及其盈亏，均由使用者自行承担。作者不对因使用本脚本而产生的任何
+// 直接或间接损失承担责任。
