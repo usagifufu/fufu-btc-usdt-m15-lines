@@ -1,6 +1,23 @@
 //@version=5
 indicator("fufu BTCUSDT 15m 单画线", shorttitle = "fufu BTC M15", overlay = true, max_bars_back = 2400, max_lines_count = 500, max_labels_count = 500)
 
+// ======================= 脚本说明 =======================
+// 在 BTC/USDT 图上自动识别水平支撑 / 阻力，按「被测试的质量」分四档，两侧合计 8 类。
+//   颜色即方向：红 = 支撑 · 做多（永远在现价下方）；绿 = 阻力 · 做空（永远在现价上方）。
+//   粗细即同向：与当前趋势同向的一侧画【粗线】，反向的一侧画【细线】（⑥ 可改成隐藏或同宽）。
+//   方向来源于「多空分界」状态机（道氏结构），分界线本身同时就是结构止损位。
+// 8 类标签的用途与方向：
+//   做多侧（红，需求买，逢跌找买点）
+//     已证实的 支撑     k=6  被反复测试且守住，最硬的一档
+//     变节者 支撑       k=3  原本是阻力，被向上突破后角色反转成支撑
+//     弱不牢固的 支撑   k=7  被测试过但守得勉强
+//     未经测试的 支撑   k=8  只有枢轴、还没被回踩确认
+//   做空侧（绿，供给卖，逢涨找卖点）
+//     已证实的 阻力     k=1  被反复测试且顶住，最硬的一档
+//     变节者 阻力       k=4  原本是支撑，被向下跌破后角色反转成阻力
+//     弱不牢固的 阻力   k=5  被测试过但顶得勉强
+//     未经测试的 阻力   k=2  只有枢轴、还没被反抽确认
+
 // ======================= ① 显示哪些类别（【做多·红】/【做空·绿】） =======================
 gA = "① 显示哪些类别（★做多=红线 / ★做空=绿线）"
 inc_proven_sup   = input.bool(true, "【做多·红】已证实的 支撑 · 需求买（测试≥1）", group = gA)
@@ -45,15 +62,16 @@ cSup   = input.color(#f85149, "做多 支撑线（红）",   group = gC)
 cWeakR = input.color(#56d364, "做空 弱阻力线（浅绿）", group = gC)
 cWeakS = input.color(#ffa657, "做多 弱支撑线（橙）", group = gC)
 showLeg = input.bool(true, "显示配色图例", group = gC, tooltip = "在图右下角常驻一行说明：红线 = 做多，绿线 = 做空")
-lw     = input.int(1,   "线宽",           minval = 1, maxval = 4,   group = gC)
+lw     = input.int(2,   "同向线宽（粗）", minval = 1, maxval = 6,   group = gC, tooltip = "与当前趋势同向的那一侧画线宽度。做多趋势下即红色支撑类")
+lwOpp  = input.int(1,   "反向线宽（细）", minval = 1, maxval = 6,   group = gC, tooltip = "与当前趋势反向的那一侧画线宽度。做多趋势下即绿色阻力类。想完全不区分粗细就设成和「同向线宽」一样的值，或者把 ⑥ 的「反向画线处理」改成「不区分粗细」")
 extBar = input.int(60,  "向右延长K线数",  minval = 0, maxval = 300, group = gC, tooltip = "15m × 60 = 15 小时")
 showLbl = input.bool(true, "显示右侧中文标签", group = gC)
 
-// ======================= ⑥ 多空分界与趋势过滤 =======================
-gT = "⑥ 多空分界与趋势过滤"
+// ======================= ⑥ 多空分界与趋势分层 =======================
+gT = "⑥ 多空分界与趋势分层"
 showDiv  = input.bool(true,  "显示多空分界线", group = gT, tooltip = "做多趋势时，线 = 最近一个已证实的摆动低点（收盘跌破即转空）；做空趋势时，线 = 最近一个已证实的摆动高点（收盘突破即转多）。它同时也是结构止损位")
-trendFlt = input.bool(true,  "按趋势过滤：只显示同向画线", group = gT, tooltip = "做多趋势只留【做多·红】的支撑类；做空趋势只留【做空·绿】的阻力类。关掉则恢复全部显示")
-showStat = input.bool(true,  "显示趋势状态标签", group = gT, tooltip = "在图表最上方常驻一行：当前方向 + 只显示哪一侧画线")
+oppMode  = input.string("反向改细线", "反向画线处理", options = ["反向改细线", "反向完全隐藏", "不区分粗细"], group = gT, tooltip = "做多趋势下：【做多·红】支撑类算同向（粗线），【做空·绿】阻力类算反向。做空趋势下反过来：绿线粗、红线细。改细线 = 两侧都看得到，但主次分明；完全隐藏 = 只留同向一侧")
+showStat = input.bool(true,  "显示趋势状态标签", group = gT, tooltip = "在图表最上方常驻一行：当前方向 + 哪一侧是粗线")
 divPiv   = input.int(14,     "分界 摆动点左/右K线数", minval = 2, maxval = 50, group = gT, tooltip = "多空分界专用枢轴，比画线用的枢轴更粗。画线找的是具体价位，分界判的是大结构。调大方向更稳但更迟钝；用 6（跟画线一样）会在区间里反复换边")
 divBkPct = input.float(0.15, "分界穿越确认 %", minval = 0.0, maxval = 3.0, step = 0.05, group = gT, tooltip = "收盘价须超出分界线这个幅度，才认定趋势翻转。调大更稳（少翻转）、调小更灵敏（早转向）")
 divW     = input.int(2,      "分界线宽度",   minval = 1, maxval = 6, group = gT)
@@ -153,6 +171,13 @@ else
 float divLv = trendDir == 1 ? lastSupLv : trendDir == -1 ? lastResLv : na
 color divCl = trendDir == 1 ? cDivL : trendDir == -1 ? cDivS : color.gray
 
+// 反向侧处理（⑥ 反向画线处理）。方向与类别的关系：
+//   trendDir = 1（做多）→ 同向 = 支撑类 k∈{3,6,7,8}（红），反向 = 阻力类 k∈{1,2,4,5}（绿）
+//   trendDir = -1（做空）→ 反过来，绿粗红细
+//   trendDir = 0（未判定）→ 谁都不算反向，两侧一律用同向线宽
+bool hideOpp = oppMode == "反向完全隐藏"
+bool thinOpp = oppMode == "反向改细线"
+
 // ======================= 核心：触及 / 测试 / 穿越 探测 =======================
 // ★注意：Pine 的 high[k] 是「往回 k 根」的偏移，不是绝对K线序号。
 //   本函数里 j / k / m 都是从枢轴表里取的绝对序号（bar_index），
@@ -206,11 +231,13 @@ f_clearAll() =>
             label.delete(array.get(LBS, i))
         array.clear(LBS)
 
-f_hLine(int x0, float y, string txt, color c, bool solid) =>
-    line ln = line.new(x0, y, bar_index + extBar, y, color = c, width = lw, style = solid ? line.style_solid : line.style_dashed)
+// thin = true → 反向侧画线：细线 + 更小的标签，与同向侧拉开主次
+f_hLine(int x0, float y, string txt, color c, bool solid, bool thin) =>
+    int w = thin ? lwOpp : lw
+    line ln = line.new(x0, y, bar_index + extBar, y, color = c, width = w, style = solid ? line.style_solid : line.style_dashed)
     array.push(LNS, ln)
     if showLbl
-        label lb = label.new(bar_index + extBar, y, text = txt + "  " + str.tostring(y, format.mintick), style = label.style_label_left, color = color.new(color.black, 100), textcolor = c, size = size.small, textalign = text.align_left)
+        label lb = label.new(bar_index + extBar, y, text = txt + "  " + str.tostring(y, format.mintick), style = label.style_label_left, color = color.new(color.black, 100), textcolor = c, size = thin ? size.tiny : size.small, textalign = text.align_left)
         array.push(LBS, lb)
 
 // ======================= 挑选：按档次排序 + 去重 + 限额 =======================
@@ -273,6 +300,19 @@ f_solid(int k) =>
 // 类别代码 → 是否启用
 f_on(int k) =>
     k == 1 ? inc_proven_res : k == 2 ? inc_untested_res : k == 3 ? inc_turn_sup : k == 4 ? inc_turn_res : k == 5 ? inc_weak_res : k == 6 ? inc_proven_sup : k == 7 ? inc_weak_sup : inc_untested_sup
+
+// 类别代码 → 是否属于做多侧（支撑类 k∈{3,6,7,8}）
+f_isBullK(int k) =>
+    k == 3 or k == 6 or k == 7 or k == 8
+
+// 类别代码 → 是否与当前趋势反向（做多趋势下的阻力类、做空趋势下的支撑类）
+// trendDir = 0（尚未判定）时谁都不算反向
+f_isOppK(int k) =>
+    trendDir != 0 and (f_isBullK(k) != (trendDir == 1))
+
+// 类别代码 → 本条线是否该画成细线
+f_thinK(int k) =>
+    thinOpp and f_isOppK(k)
 
 // ======================= 主逻辑（只在最后一根K线重算重画） =======================
 if barstate.islast
@@ -343,14 +383,14 @@ if barstate.islast
                         array.push(cG, f_grade(kd, tv, wv, wc, wu, ww))
 
     // ---- 第一轮：每类各自限额 + 间距去重 ----
-    // 趋势过滤在这里生效：只把「与当前趋势同向」的类别放进候选池。
-    //   做多 → 支撑类 k ∈ {3,6,7,8}（画成红色）
-    //   做空 → 阻力类 k ∈ {1,2,4,5}（画成绿色）
-    // 被拦掉的类别 pool 保持为空，后面的 f_pick 自然返回空、不画。
+    // 反向侧处理（⑥ 反向画线处理）在这里决定「谁进候选池」：
+    //   反向改细线（默认）→ 8 类全都进池，画的时候反向侧用细线、同向侧用粗线
+    //   反向完全隐藏     → 反向类别直接不进池，画面上只剩同向一侧
+    //   不区分粗细       → 8 类全都进池，宽度一致
+    //   做多 → 支撑类 k ∈ {3,6,7,8}（红）为同向；做空 → 阻力类 k ∈ {1,2,4,5}（绿）为同向。
     int[] sel = array.new_int()
     for k = 1 to 8
-        bool isBullK = k == 3 or k == 6 or k == 7 or k == 8
-        bool keepK   = not trendFlt or trendDir == 0 or (isBullK == (trendDir == 1))
+        bool keepK = not (hideOpp and f_isOppK(k))
         int[] pool = array.new_int()
         if keepK
             if array.size(cK) > 0
@@ -373,14 +413,14 @@ if barstate.islast
             int kd = array.get(cK, idx)
             float px = array.get(cP, idx)
             string txt = array.get(cT, idx) > 0 ? f_sub(kd) + "，测试=" + str.tostring(array.get(cT, idx)) : f_sub(kd)
-            f_hLine(x0, px, txt, f_col(kd), f_solid(kd))
+            f_hLine(x0, px, txt, f_col(kd), f_solid(kd), f_thinK(kd))
     if array.size(dnSel) > 0
         for i = 0 to array.size(dnSel) - 1
             int idx = array.get(dnSel, i)
             int kd = array.get(cK, idx)
             float px = array.get(cP, idx)
             string txt = array.get(cT, idx) > 0 ? f_sub(kd) + "，测试=" + str.tostring(array.get(cT, idx)) : f_sub(kd)
-            f_hLine(x0, px, txt, f_col(kd), f_solid(kd))
+            f_hLine(x0, px, txt, f_col(kd), f_solid(kd), f_thinK(kd))
 
     // ---- 手动价位追加 ----
     if str.length(manualStr) > 0
@@ -396,7 +436,7 @@ if barstate.islast
                     string t = "手动价位"
                     if array.size(kv) > 1
                         t := array.get(kv, 1)
-                    f_hLine(x0, y, t, manCol, true)
+                    f_hLine(x0, y, t, manCol, true, false)
 
     // ---- 多空分界线（最后创建 = 画在最上层，加粗实线） ----
     if showDiv and not na(divLv)
@@ -416,13 +456,17 @@ if barstate.islast
             sDir := "📈 趋势：做多"
         else if trendDir == -1
             sDir := "📉 趋势：做空"
-        string sFlt = "暂显示全部画线"
-        if not trendFlt
-            sFlt := "（趋势过滤已关闭，显示全部画线）"
-        else if trendDir == 1
-            sFlt := "只显示【做多 · 红】支撑类画线"
-        else if trendDir == -1
-            sFlt := "只显示【做空 · 绿】阻力类画线"
+        // 说清楚「哪一侧是粗线」。趋势未判定时不区分主次，两侧一律同向线宽。
+        string sFlt = "全部画线同宽 · 未分层"
+        if trendDir != 0
+            string sNear = trendDir == 1 ? "做多 · 红" : "做空 · 绿"
+            string sFar  = trendDir == 1 ? "做空 · 绿" : "做多 · 红"
+            if hideOpp
+                sFlt := "只显示【" + sNear + "】一侧"
+            else if thinOpp
+                sFlt := "【" + sNear + "】粗线为主 ｜ 【" + sFar + "】细线为参考"
+            else
+                sFlt := "【" + sNear + "】与【" + sFar + "】同宽显示"
         string sLv = ""
         if not na(divLv)
             sLv := "　｜　分界 " + str.tostring(divLv, format.mintick) + (trendDir == 1 ? "（跌破转空）" : "（突破转多）")
@@ -432,7 +476,7 @@ if barstate.islast
     // ---- 常驻配色图例 + 免责声明（图表右下角，始终显示） ----
     float discY = math.min(math.min(discLo, discLo2), close) - discAtr * 1.5
     if showLeg
-        label lg = label.new(bar_index, discY + discAtr * 1.3, text = "🔴 红线 = 支撑 · 做多（需求买，逢跌找买点）　｜　🟢 绿线 = 阻力 · 做空（供给卖，逢涨找卖点）　｜　粗实线 = 多空分界（跌破/突破即换边）", style = label.style_label_left, color = color.new(color.black, 80), textcolor = color.gray, size = size.tiny, textalign = text.align_left)
+        label lg = label.new(bar_index, discY + discAtr * 1.3, text = "🔴 红线 = 支撑 · 做多（逢跌找买点）　｜　🟢 绿线 = 阻力 · 做空（逢涨找卖点）　｜　粗线 = 顺趋势　细线 = 逆趋势参考　｜　最粗实线 = 多空分界（跌破/突破即换边）", style = label.style_label_left, color = color.new(color.black, 80), textcolor = color.gray, size = size.tiny, textalign = text.align_left)
         array.push(LBS, lg)
     label dl = label.new(bar_index, discY, text = DISC_TXT, style = label.style_label_left, color = color.new(color.black, 75), textcolor = color.gray, size = size.tiny, textalign = text.align_left)
     array.push(LBS, dl)
