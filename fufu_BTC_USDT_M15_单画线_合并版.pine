@@ -1,0 +1,771 @@
+//@version=5
+indicator("fufu BTCUSDT 15m 单画线 合并版", shorttitle = "fufu BTC 合并", overlay = true, max_bars_back = 3200, max_lines_count = 500, max_labels_count = 500)
+
+// ======================= 脚本说明 =======================
+// 本文件是本仓库的【合并版】：把另外两份脚本画在同一张图上。
+//   原版  （fufu_BTC_USDT_M15_单画线.pine）        —— 8 类语义标签 + 多空分界线 + 趋势分层
+//   档位版（fufu_BTC_USDT_M15_单画线_档位版.pine）—— ZigZag 折线 + 第N阻力/支撑 + 触及信号
+//
+// 合并版相比「两个指标同时加载」，多了两处刻意的设计决定：
+//
+//   ① 只保留【原版】的多空分界线。
+//      原版的分界线和档位版的「多空关键位」取值逻辑完全相同（都是最近一个已确认的
+//      摆动高低点），只是参数不同；两条都画会在同一张图上给出两个方向，反而看不清。
+//      合并版统一用原版那条（带「同向粗 / 反向细」的趋势分层），档位版不再单独画
+//      关键位，也不再单独跑一套状态机。
+//
+//   ② 档位版那条线改用【中性色】，与原版的红绿语义线拉开：
+//        红 / 绿 横线 = 原版的语义位（支撑·做多 / 阻力·做空），粗细表示顺逆趋势
+//        灰 横线      = 档位版的 第N阻力 / 第N支撑
+//        蓝 折线      = ZigZag 摆动路径
+//        蓝 ↑ / ↓     = 触及信号箭头
+//      一眼就能分出「哪条是语义位、哪条是档位位」。
+//
+// 两套画法各自跑自己的枢轴与参数（参数组 ② ~ ⑥ 属原版，⑦ ~ ⑩ 属档位版），
+// 彼此不影响。只想看其中一套，把 ① 里的两个总开关关掉一个即可。
+
+// ======================= 常驻免责声明 =======================
+DISC_TXT = "⚠ 免责声明：本指标仅为技术分析辅助工具，不构成任何投资建议。加密货币波动极大，据此操作盈亏自负。"
+
+// ======================= ① 总开关 =======================
+gZ = "① 总开关（两套画法各自独立）"
+showSem = input.bool(true, "显示【原版】语义标签线", group = gZ, tooltip = "红 / 绿横线 = 8 类语义位，自带多空分界与趋势分层")
+showLvl = input.bool(true, "显示【档位版】结构线", group = gZ, tooltip = "灰横线 = 第N阻力 / 第N支撑；蓝折线 = ZigZag 摆动路径；蓝箭头 = 触及信号。关掉它不影响原版语义线")
+
+// ======================= ② 原版 · 显示哪些类别 =======================
+gA = "② 原版 · 显示哪些类别（★做多=红线 / ★做空=绿线）"
+inc_proven_sup   = input.bool(true, "【做多·红】已证实的 支撑 · 需求买（测试≥1）", group = gA)
+inc_turn_sup     = input.bool(true, "【做多·红】变节者 支撑 · 需求买",            group = gA)
+inc_weak_sup     = input.bool(true, "【做多·红】弱不牢固的 支撑 · 需求买",         group = gA)
+inc_untested_sup = input.bool(true, "【做多·红】未经测试的 支撑 · 需求买",         group = gA)
+inc_proven_res   = input.bool(true, "【做空·绿】已证实的 阻力 · 供给卖（测试≥1）", group = gA)
+inc_turn_res     = input.bool(true, "【做空·绿】变节者 阻力 · 供给卖",            group = gA)
+inc_weak_res     = input.bool(true, "【做空·绿】弱不牢固的 阻力 · 供给卖",         group = gA)
+inc_untested_res = input.bool(true, "【做空·绿】未经测试的 阻力 · 供给卖",         group = gA)
+
+// ======================= ③ 原版 · 识别参数 =======================
+gP = "③ 原版 · 识别参数"
+pivL    = input.int(6,     "摆动点 左K线数", minval = 1, maxval = 50, group = gP, tooltip = "左右各 N 根内最高/最低才算摆动点。注意与 ⑦ 档位版的枢轴是两套，互不影响")
+pivR    = input.int(6,     "摆动点 右K线数", minval = 1, maxval = 50, group = gP)
+lookbk  = input.int(900,   "识别回看根数",   minval = 50, maxval = 3000, group = gP, tooltip = "15m × 900 ≈ 9.4 天；合并版缓冲区放宽到 3200，上限提到 3000")
+tolPct  = input.float(0.40, "回踩容差 %",     minval = 0.0, maxval = 5.0, step = 0.05, group = gP, tooltip = "价格走进距该位多少 % 以内即算“触及”")
+brkPct  = input.float(0.60, "有效穿越 %",     minval = 0.0, maxval = 10.0, step = 0.05, group = gP, tooltip = "超出该位这个幅度以上算“被击穿”")
+rejPct  = input.float(1.00, "有效拒绝 %",     minval = 0.0, maxval = 10.0, step = 0.05, group = gP, tooltip = "触及后反向走出这个幅度算一次“有效测试”（该位守住了）")
+rejWin  = input.int(24,    "拒绝观察K线数",   minval = 2, maxval = 100, group = gP, tooltip = "触及后观察多少根判断是否反转")
+gapK    = input.int(6,     "独立簇间隔K线数", minval = 1, maxval = 100, group = gP, tooltip = "两次触及相隔少于这么多根算同一次")
+nearPct = input.float(0.20, "贴近现价忽略 %", minval = 0.0, maxval = 2.0, step = 0.05, group = gP, tooltip = "离现价太近的摆动点不画（噪声）")
+
+// ======================= ④ 原版 · 数量与排序 =======================
+gN = "④ 原版 · 数量与排序"
+maxCat = input.int(3,        "每类最多几条",     minval = 1, maxval = 6,  group = gN, tooltip = "四类 × 两侧，每类先各自限额")
+maxUp  = input.int(6,        "现价上方最多几条", minval = 1, maxval = 12, group = gN)
+maxDn  = input.int(4,        "现价下方最多几条", minval = 1, maxval = 12, group = gN)
+gapPct = input.float(0.35,   "同类最小间距 %",   minval = 0.0, maxval = 3.0, step = 0.05, group = gN, tooltip = "同侧两条线价位差小于此百分比时只留一条")
+rankBy = input.string("综合", "排序方式", options = ["综合", "距离"], group = gN, tooltip = "综合 = 按档次分排序（测试次数优先）；距离 = 只按离现价远近")
+rankOrd = input.string("测试>变节者>已证实>弱>未测", "档次顺序", options = ["测试>变节者>已证实>弱>未测", "测试>变节者>已证实>未测>弱", "测试>变节者>未测>已证实>弱", "测试>未测>变节者>已证实>弱"], group = gN, tooltip = "档次分 = 4×测试次数 + 本档权重；靠前的权重更高")
+
+// ======================= ⑤ 原版 · 颜色与样式 =======================
+gC = "⑤ 原版 · 颜色与样式"
+cRes   = input.color(#3fb950, "做空 阻力线（绿）",   group = gC)
+cSup   = input.color(#f85149, "做多 支撑线（红）",   group = gC)
+cWeakR = input.color(#56d364, "做空 弱阻力线（浅绿）", group = gC)
+cWeakS = input.color(#ffa657, "做多 弱支撑线（橙）", group = gC)
+lw     = input.int(2,   "同向线宽（粗）", minval = 1, maxval = 6,   group = gC, tooltip = "与当前趋势同向的那一侧画线宽度。做多趋势下即红色支撑类")
+lwOpp  = input.int(1,   "反向线宽（细）", minval = 1, maxval = 6,   group = gC, tooltip = "与当前趋势反向的那一侧画线宽度。做多趋势下即绿色阻力类。想完全不区分粗细就设成和「同向线宽」一样的值，或者把 ⑥ 的「反向画线处理」改成「不区分粗细」")
+extBar = input.int(60,  "向右延长K线数",  minval = 0, maxval = 300, group = gC, tooltip = "15m × 60 = 15 小时。两套画法共用这个延长长度")
+
+// ======================= ⑥ 多空分界与趋势分层 =======================
+gT = "⑥ 多空分界与趋势分层（两套共用）"
+showDiv  = input.bool(true,  "显示多空分界线", group = gT, tooltip = "做多趋势时，线 = 最近一个已证实的摆动低点（收盘跌破即转空）；做空趋势时，线 = 最近一个已证实的摆动高点（收盘突破即转多）。它同时也是结构止损位")
+oppMode  = input.string("反向改细线", "反向画线处理", options = ["反向改细线", "反向完全隐藏", "不区分粗细"], group = gT, tooltip = "只作用在【原版】语义线上：做多趋势下【做多·红】支撑类算同向（粗线），【做空·绿】阻力类算反向。档位线不受影响，始终是同一宽度")
+showStat = input.bool(true,  "显示趋势状态标签", group = gT, tooltip = "在图表上方常驻一行：当前方向 + 哪一侧是粗线 + 档位线数量")
+divPiv   = input.int(14,     "分界 摆动点左/右K线数", minval = 2, maxval = 50, group = gT, tooltip = "多空分界专用枢轴，比画线用的枢轴更粗。画线找的是具体价位，分界判的是大结构")
+divBkPct = input.float(0.15, "分界穿越确认 %", minval = 0.0, maxval = 5.0, step = 0.05, group = gT, tooltip = "收盘价须超出分界线这个幅度，才认定趋势翻转。沿用原版的 0.15%。提示：档位版单独跑时用的是 1.50%，因为它的状态机刻意跑满全量；合并版只有这一个状态机，若觉得方向翻得太勤，把它调到 1.50% 即可与档位版当时的稳定性对齐")
+divW     = input.int(2,      "分界线宽度",   minval = 1, maxval = 6, group = gT)
+cDivL    = input.color(#f85149, "做多 分界线（红）", group = gT)
+cDivS    = input.color(#3fb950, "做空 分界线（绿）", group = gT)
+
+// ======================= ⑦ 档位版 · 识别参数 =======================
+gZP = "⑦ 档位版 · 识别参数"
+zPivL    = input.int(10,    "摆动点 左K线数",   minval = 1,    maxval = 50,   group = gZP, tooltip = "档位版用自己的枢轴，与 ③ 的 6 独立。与黄金 / ETH 档位版同粒度")
+zPivR    = input.int(10,    "摆动点 右K线数",   minval = 1,    maxval = 50,   group = gZP)
+zLookbk  = input.int(2500,  "识别回看根数",     minval = 100,  maxval = 3000, group = gZP, tooltip = "15m × 2500 ≈ 26 天。比原版的 900 长得多，因为「第N档位」需要看到更远的历史摆动位")
+zNearPct = input.float(0.20, "贴近现价忽略 %",  minval = 0.0,  maxval = 2.0,  step = 0.05, group = gZP, tooltip = "离现价太近的折点不参与分档，避免线压在现价上")
+zAmpPct  = input.float(1.40, "ZigZag 最小摆动幅度 %", minval = 0.05, maxval = 5.0, step = 0.05, group = gZP, tooltip = "相邻两个折点的最小幅度。振幅类参数，按 ATR% 缩放：BTC 的 1.40% = 7.87 个 ATR，黄金 0.80% = 7.97、ETH 1.70% = 7.73，三者是同一设计点")
+
+// ======================= ⑧ 档位版 · 分档 =======================
+gZN = "⑧ 档位版 · 分档（第N阻力 / 第N支撑）"
+zMaxN   = input.int(3,       "每侧最多档位", minval = 1, maxval = 5,   group = gZN, tooltip = "与另两个品种一致，默认第1~第3")
+zGapPct = input.float(0.50,  "同侧最小间距 %", minval = 0.0, maxval = 3.0, step = 0.05, group = gZN, tooltip = "同侧两条线价位差小于此幅度时只留更近的那条")
+zDraw   = input.int(500,     "结构线向左画多少根", minval = 0, maxval = 3000, group = gZN, tooltip = "档位线从这条位置往右画，比原版的回看窗口短")
+
+// ======================= ⑨ 档位版 · 触及信号 =======================
+gZS = "⑨ 档位版 · 触及信号箭头"
+zShowSig = input.bool(true,  "显示触及信号", group = gZS, tooltip = "下探档位线后收回 → ↑；上冲档位线后回落 → ↓。这是档位版自己的信号，与 ③ 的「有效测试」不是一回事")
+zSigTol  = input.float(0.20, "触及容差 %",   minval = 0.0, maxval = 2.0, step = 0.05, group = gZS, tooltip = "价格进入档位线 ±这个幅度算「触及」")
+zSigLook = input.int(260,    "信号回看根数", minval = 20, maxval = 1000, group = gZS, tooltip = "15m × 260 ≈ 2.7 天")
+zSigMax  = input.int(2,      "每条线最多几个信号", minval = 1, maxval = 5, group = gZS, tooltip = "每条档位线只标最近的这几次触及，避免箭头糊满屏")
+
+// ======================= ⑩ 档位版 · 颜色与样式 =======================
+gZC = "⑩ 档位版 · 颜色与样式（中性色）"
+zRes   = input.color(#787b86, "第N阻力线（中性灰）", group = gZC, tooltip = "档位线刻意不用红绿，避免与原版语义线混淆。红绿 = 语义，灰蓝 = 结构")
+zSup   = input.color(#787b86, "第N支撑线（中性灰）", group = gZC)
+zZZ    = input.color(#5b8dff, "ZigZag 折线（蓝）",   group = gZC)
+zLong  = input.color(#2962ff, "触及信号 ↑（蓝）",   group = gZC, tooltip = "箭头方向本身表示支撑成立 / 阻力成立，所以两向用同一蓝色即可")
+zShrt  = input.color(#2962ff, "触及信号 ↓（蓝）",   group = gZC)
+zLw     = input.int(1,   "档位线宽",       minval = 1, maxval = 4,   group = gZC, tooltip = "档位线是参考位，默认比原版语义线细")
+zShowZZ = input.bool(true, "显示 ZigZag 折线", group = gZC)
+showLbl = input.bool(true, "显示右侧标签", group = gZC, tooltip = "两套画法共用这个开关")
+showLeg = input.bool(true, "显示配色图例", group = gZC)
+
+// ======================= ⑪ 手动价位 =======================
+gM = "⑪ 手动价位（追加，可留空）"
+manualStr = input.string("", "价格|标签;价格|标签", group = gM, tooltip = "例：80445|MT5阻力;75609|MT5支撑。留空则只用自动识别")
+manCol    = input.color(#d29922, "手动线颜色", group = gM)
+
+// ======================= 常驻标签锚点（ta.* 必须每根K线调用）=======================
+discLo   = ta.lowest(low, 500)
+discLo2  = ta.lowest(low, 100)
+discHi   = ta.highest(high, 500)
+discAtr  = ta.atr(14)
+
+// ======================= 摆动点记录（原版）=======================
+var int[]   phB = array.new_int()
+var float[] phP = array.new_float()
+var int[]   plB = array.new_int()
+var float[] plP = array.new_float()
+
+pvH = ta.pivothigh(high, pivL, pivR)
+pvL = ta.pivotlow(low,  pivL, pivR)
+
+if not na(pvH)
+    array.push(phB, bar_index - pivR)
+    array.push(phP, pvH)
+
+if not na(pvL)
+    array.push(plB, bar_index - pivR)
+    array.push(plP, pvL)
+
+// 每根K线都裁剪，保证「最老枢轴」严格不早于 bar_index - lookbk。
+// ★注意：Pine 的 and / or 不做短路求值，两边永远都算。
+//   所以不能写 while array.size(x) > 0 and array.get(x, 0) < cut ——
+//   数组为空时 array.get 照跑，直接 Index 0 is out of bounds。
+//   正确做法：用 if 先挡掉空数组，循环条件里只放 array.get（进循环时 size 必然 > 0），
+//   并在循环体内 shift 完之后判断是否已空、是则 break。
+int cutB = bar_index - lookbk
+if array.size(phB) > 0
+    while array.get(phB, 0) < cutB
+        array.shift(phB)
+        array.shift(phP)
+        if array.size(phB) == 0
+            break
+if array.size(plB) > 0
+    while array.get(plB, 0) < cutB
+        array.shift(plB)
+        array.shift(plP)
+        if array.size(plB) == 0
+            break
+
+// ======================= 摆动点记录（档位版 · 独立一套）=======================
+var float[] zphP = array.new_float()
+var int[]   zphB = array.new_int()
+var float[] zplP = array.new_float()
+var int[]   zplB = array.new_int()
+
+float zpvH = ta.pivothigh(zPivL, zPivR)
+float zpvL = ta.pivotlow(zPivL, zPivR)
+
+if not na(zpvH)
+    array.push(zphP, zpvH)
+    array.push(zphB, bar_index - zPivR)
+if not na(zpvL)
+    array.push(zplP, zpvL)
+    array.push(zplB, bar_index - zPivR)
+
+int zCutB = bar_index - zLookbk
+if array.size(zphB) > 0
+    while array.get(zphB, 0) < zCutB
+        array.shift(zphB)
+        array.shift(zphP)
+        if array.size(zphB) == 0
+            break
+if array.size(zplB) > 0
+    while array.get(zplB, 0) < zCutB
+        array.shift(zplB)
+        array.shift(zplP)
+        if array.size(zplB) == 0
+            break
+
+// ======================= ZigZag 折点（档位版 · 全局逐根）=======================
+// 同类型折点取更极端的那根；异类型须满足最小幅度才成交替。
+float zAmpP = zAmpPct / 100.0
+
+var float[] zzP = array.new_float()
+var int[]   zzB = array.new_int()
+var bool[]  zzH = array.new_bool()
+
+if not na(zpvH)
+    int nzH = array.size(zzP)
+    if nzH == 0
+        array.push(zzP, zpvH)
+        array.push(zzB, bar_index - zPivR)
+        array.push(zzH, true)
+    else
+        float lpxH = array.get(zzP, nzH - 1)
+        bool  lHH  = array.get(zzH, nzH - 1)
+        if lHH
+            if zpvH > lpxH
+                array.set(zzP, nzH - 1, zpvH)
+                array.set(zzB, nzH - 1, bar_index - zPivR)
+        else
+            if lpxH > 0 and (zpvH - lpxH) / lpxH >= zAmpP
+                array.push(zzP, zpvH)
+                array.push(zzB, bar_index - zPivR)
+                array.push(zzH, true)
+
+if not na(zpvL)
+    int nzL = array.size(zzP)
+    if nzL == 0
+        array.push(zzP, zpvL)
+        array.push(zzB, bar_index - zPivR)
+        array.push(zzH, false)
+    else
+        float lpxL = array.get(zzP, nzL - 1)
+        bool  lHL  = array.get(zzH, nzL - 1)
+        if not lHL
+            if zpvL < lpxL
+                array.set(zzP, nzL - 1, zpvL)
+                array.set(zzB, nzL - 1, bar_index - zPivR)
+        else
+            if lpxL > 0 and (lpxL - zpvL) / lpxL >= zAmpP
+                array.push(zzP, zpvL)
+                array.push(zzB, bar_index - zPivR)
+                array.push(zzH, false)
+
+if array.size(zzB) > 0
+    while array.get(zzB, 0) < zCutB
+        array.shift(zzB)
+        array.shift(zzP)
+        array.shift(zzH)
+        if array.size(zzB) == 0
+            break
+
+// ======================= 触及信号历史（档位版）=======================
+var float[] sigLo = array.new_float()
+var float[] sigHi = array.new_float()
+var float[] sigCl = array.new_float()
+var float[] sigOp = array.new_float()
+var int[]   sigB  = array.new_int()
+
+array.push(sigLo, low)
+array.push(sigHi, high)
+array.push(sigCl, close)
+array.push(sigOp, open)
+array.push(sigB, bar_index)
+if array.size(sigB) > zSigLook + 10
+    array.shift(sigB)
+    array.shift(sigLo)
+    array.shift(sigHi)
+    array.shift(sigCl)
+    array.shift(sigOp)
+
+// ======================= 多空分界：结构状态机（★必须逐根K线推进）=======================
+// 判定法（道氏结构）：
+//   多头结构里，分界线 = 最近一个「已证实的摆动低点」。收盘价跌破它 → 结构破坏 → 转空。
+//   空头结构里，分界线 = 最近一个「已证实的摆动高点」。收盘价突破它 → 结构反转 → 转多。
+//
+// ★三个不能改的地方：
+//   1) 不能写进 if barstate.islast —— 那样只在末根K线算一次，trendDir 会永远停在 0。
+//   2) 判定方向时只用「本方向的那一侧枢轴」：做多时只看有没有跌破低点，不看有没有
+//      突破高点。否则价格在区间里来回震荡时，两侧条件会轮流成立、方向反复翻转。
+//   3) 枢轴是延迟 divPiv 根才确认的，所以 lastSupLv / lastResLv 都是「最近已确认」而非
+//      「最近发生」。这不是 bug，是 ta.pivot* 的固有特性。
+//   4) 合并版里这是**唯一**的状态机：档位版原本那套已删除，两套画法共用这一个方向。
+var float lastSupLv = na
+var float lastResLv = na
+var int   trendDir  = 0
+
+pvHD = ta.pivothigh(high, divPiv, divPiv)
+pvLD = ta.pivotlow(low,  divPiv, divPiv)
+
+if not na(pvLD)
+    lastSupLv := pvLD
+if not na(pvHD)
+    lastResLv := pvHD
+
+float divBk = divBkPct / 100.0
+
+if trendDir == 0
+    if not na(lastSupLv) and close > lastSupLv
+        trendDir := 1
+    else if not na(lastResLv) and close < lastResLv
+        trendDir := -1
+else if trendDir == 1
+    if not na(lastSupLv) and close < lastSupLv * (1 - divBk)
+        trendDir := -1
+else
+    if not na(lastResLv) and close > lastResLv * (1 + divBk)
+        trendDir := 1
+
+float divLv = trendDir == 1 ? lastSupLv : trendDir == -1 ? lastResLv : na
+color divCl = trendDir == 1 ? cDivL : trendDir == -1 ? cDivS : color.gray
+
+bool hideOpp = oppMode == "反向完全隐藏"
+bool thinOpp = oppMode == "反向改细线"
+
+// ======================= 核心：触及 / 测试 / 穿越 探测 =======================
+// ★注意：Pine 的 high[k] 是「往回 k 根」的偏移，不是绝对K线序号。
+//   本函数里 j / k / m 都是从枢轴表里取的绝对序号（bar_index），
+//   所以取历史一律写成 high[last - j]（last = bar_index），把序号换算成偏移。
+f_probe(int pb, float px, bool isHigh, float tol, float brkP, float rejP, int win, int gapc) =>
+    int   touched = 0
+    int   tests   = 0
+    int   brk     = 0
+    int   last    = bar_index
+    int   j       = pb + pivR
+    while j <= last
+        bool inband = isHigh ? high[last - j] >= px * (1 - tol) : low[last - j] <= px * (1 + tol)
+        if not inband
+            j += 1
+        else
+            int   k   = j
+            float ext = isHigh ? high[last - j] : low[last - j]
+            while k <= last
+                bool hit = isHigh ? high[last - k] >= px * (1 - tol) : low[last - k] <= px * (1 + tol)
+                if not hit
+                    break
+                ext := isHigh ? math.max(ext, high[last - k]) : math.min(ext, low[last - k])
+                k += 1
+            touched += 1
+            float over = isHigh ? (ext - px) / px : (px - ext) / px
+            if over >= brkP
+                brk += 1
+            else
+                int endi = math.min(last, k + win - 1)
+                if endi > k - 1
+                    float back = isHigh ? low[last - k] : high[last - k]
+                    for m = k to endi
+                        back := isHigh ? math.min(back, low[last - m]) : math.max(back, high[last - m])
+                    float rev = isHigh ? (px - back) / px : (back - px) / px
+                    if rev >= rejP
+                        tests += 1
+            j := k + gapc
+    [touched, tests, brk]
+
+// ======================= 画线与容器（两套共用）=======================
+var line[]  LNS = array.new_line()
+var label[] LBS = array.new_label()
+
+f_clearAll() =>
+    if array.size(LNS) > 0
+        for i = 0 to array.size(LNS) - 1
+            line.delete(array.get(LNS, i))
+        array.clear(LNS)
+    if array.size(LBS) > 0
+        for i = 0 to array.size(LBS) - 1
+            label.delete(array.get(LBS, i))
+        array.clear(LBS)
+
+// 原版用：thin = true → 反向侧画线：细线 + 更小的标签，与同向侧拉开主次
+f_hLine(int x0, float y, string txt, color c, bool solid, bool thin) =>
+    int w = thin ? lwOpp : lw
+    line ln = line.new(x0, y, bar_index + extBar, y, color = c, width = w, style = solid ? line.style_solid : line.style_dashed)
+    array.push(LNS, ln)
+    if showLbl
+        label lb = label.new(bar_index + extBar, y, text = txt + "  " + str.tostring(y, format.mintick), style = label.style_label_left, color = color.new(color.black, 100), textcolor = c, size = thin ? size.tiny : size.small, textalign = text.align_left)
+        array.push(LBS, lb)
+
+// 档位版用：中性色、固定实线、固定宽度、标签恒为小号（它是参考位，不该抢原版语义线的注意力）
+f_hLineZ(int x0, float y, string txt, color c, int w) =>
+    line ln = line.new(x0, y, bar_index + extBar, y, color = c, width = w, style = line.style_solid)
+    array.push(LNS, ln)
+    if showLbl
+        label lb = label.new(bar_index + extBar, y, text = txt + "  " + str.tostring(y, format.mintick), style = label.style_label_left, color = color.new(color.black, 100), textcolor = c, size = size.tiny, textalign = text.align_left)
+        array.push(LBS, lb)
+
+// ======================= 挑选：按档次排序 + 去重 + 限额（原版）=======================
+f_pick(int[] pool, float[] cP, int[] cG, int want, float gapF, float cc, bool byDist, bool useSide, bool above) =>
+    int[] out = array.new_int()
+    int n = array.size(pool)
+    if n > 0
+        bool[] used = array.new_bool(n, false)
+        for _t = 0 to n - 1
+            int bi = -1
+            for j = 0 to n - 1
+                if not array.get(used, j)
+                    int idx = array.get(pool, j)
+                    float y = array.get(cP, idx)
+                    bool okSide = not useSide or (above ? y >= cc : y < cc)
+                    if okSide
+                        if bi < 0
+                            bi := j
+                        else
+                            int idxb = array.get(pool, bi)
+                            float yb = array.get(cP, idxb)
+                            int gb = array.get(cG, idxb)
+                            int gj = array.get(cG, idx)
+                            bool better = byDist ? math.abs(y - cc) < math.abs(yb - cc) : (gj > gb or (gj == gb and math.abs(y - cc) < math.abs(yb - cc)))
+                            if better
+                                bi := j
+            if bi >= 0
+                array.set(used, bi, true)
+                if array.size(out) < want
+                    int idx = array.get(pool, bi)
+                    float px = array.get(cP, idx)
+                    bool ok = true
+                    if array.size(out) > 0
+                        for m = 0 to array.size(out) - 1
+                            float q = array.get(cP, array.get(out, m))
+                            if math.abs(px - q) / q <= gapF
+                                ok := false
+                    if ok
+                        array.push(out, idx)
+    out
+
+// 类别代码 → 档次分（4×测试次数 + 本档权重）
+f_grade(int k, int t, int wv, int wc, int wu, int ww) =>
+    int g = 4 * t
+    g += (k == 3 or k == 4) ? wv : (k == 1 or k == 6) ? wc : (k == 2 or k == 8) ? wu : ww
+    g
+
+// 类别代码 → 后缀文字
+f_sub(int k) =>
+    k == 1 ? "已证实的 阻力 · 供给卖 · 做空" : k == 2 ? "未经测试的 阻力 · 供给卖 · 做空" : k == 3 ? "变节者 支撑 · 需求买 · 做多" : k == 4 ? "变节者 阻力 · 供给卖 · 做空" : k == 5 ? "弱不牢固的 阻力 · 供给卖 · 做空" : k == 6 ? "已证实的 支撑 · 需求买 · 做多" : k == 7 ? "弱不牢固的 支撑 · 需求买 · 做多" : "未经测试的 支撑 · 需求买 · 做多"
+
+// 类别代码 → 颜色
+f_col(int k) =>
+    k == 5 ? cWeakR : k == 7 ? cWeakS : (k == 1 or k == 2 or k == 4) ? cRes : cSup
+
+// 类别代码 → 是否实线（已证实 = 实线）
+f_solid(int k) =>
+    k == 1 or k == 6
+
+// 类别代码 → 是否启用
+f_on(int k) =>
+    k == 1 ? inc_proven_res : k == 2 ? inc_untested_res : k == 3 ? inc_turn_sup : k == 4 ? inc_turn_res : k == 5 ? inc_weak_res : k == 6 ? inc_proven_sup : k == 7 ? inc_weak_sup : inc_untested_sup
+
+// 类别代码 → 是否属于做多侧（支撑类 k∈{3,6,7,8}）
+f_isBullK(int k) =>
+    k == 3 or k == 6 or k == 7 or k == 8
+
+// 类别代码 → 是否与当前趋势反向
+f_isOppK(int k) =>
+    trendDir != 0 and (f_isBullK(k) != (trendDir == 1))
+
+// 类别代码 → 本条线是否该画成细线
+f_thinK(int k) =>
+    thinOpp and f_isOppK(k)
+
+// ======================= 主逻辑（只在最后一根K线重算重画）=======================
+if barstate.islast
+    f_clearAll()
+
+    float close_ = close
+    // ---- 原版参数换算 ----
+    float tol    = tolPct / 100.0
+    float gapF   = gapPct / 100.0
+    float nearF  = nearPct / 100.0
+    float brkP   = brkPct / 100.0
+    float rejP   = rejPct / 100.0
+    bool  byDist = rankBy == "距离"
+    bool  o1 = rankOrd == "测试>变节者>已证实>弱>未测"
+    bool  o2 = rankOrd == "测试>变节者>已证实>未测>弱"
+    bool  o3 = rankOrd == "测试>变节者>未测>已证实>弱"
+    int   wv = o1 or o2 or o3 ? 3 : 2
+    int   wc = o1 or o2 ? 2 : 1
+    int   wu = o1 ? 0 : o2 ? 1 : o3 ? 2 : 3
+    int   ww = o1 ? 1 : 0
+    // ---- 档位版参数换算 ----
+    float zNearP = zNearPct / 100.0
+    float zGapP  = zGapPct / 100.0
+    float zSigT  = zSigTol / 100.0
+
+    int   x0  = math.max(bar_index - lookbk, 0)
+    int   zx0 = math.max(bar_index - zDraw, 0)
+
+    // ================= 第一段：档位版分档（灰线）=================
+    // 档位候选与选择用的都是价位（不是索引），与原版那套挑选刻意分开命名。
+    float[] zUpC  = array.new_float()      // 上方候选价位
+    int[]   zUpK  = array.new_int()        // 对应折点 bar_index
+    float[] zDnC  = array.new_float()
+    int[]   zDnK  = array.new_int()
+    if array.size(zzP) > 0
+        for i = 0 to array.size(zzP) - 1
+            float zp  = array.get(zzP, i)
+            bool  zisH = array.get(zzH, i)
+            if zisH and zp > close_ * (1 + zNearP)
+                array.push(zUpC, zp)
+                array.push(zUpK, array.get(zzB, i))
+            else if not zisH and zp < close_ * (1 - zNearP)
+                array.push(zDnC, zp)
+                array.push(zDnK, array.get(zzB, i))
+
+    // 选档：每轮取「剩余中离现价最近」的，与已选的最小间距都满足才收下。
+    // 循环控制变量统一在外面声明 —— Pine 对 while 体内新声明的变量支持不稳。
+    float[] zUpSel  = array.new_float()
+    int[]   zUpSelB = array.new_int()
+    float[] zDnSel  = array.new_float()
+    int[]   zDnSelB = array.new_int()
+    int[]   zUsed   = array.new_int()
+    int   zGuard = 0
+    int   zBi    = -1
+    float zBd    = 0.0
+    bool  zOk    = false
+    float zPp    = 0.0
+
+    while array.size(zUpSel) < zMaxN and zGuard < 400
+        zGuard += 1
+        zBi := -1
+        zBd := 1e18
+        if array.size(zUpC) > 0
+            for i = 0 to array.size(zUpC) - 1
+                if not array.includes(zUsed, i)
+                    float d = math.abs(array.get(zUpC, i) - close_)
+                    if d < zBd
+                        zBd := d
+                        zBi := i
+        if zBi < 0
+            break
+        array.push(zUsed, zBi)
+        zOk := true
+        if array.size(zUpSel) > 0
+            for j = 0 to array.size(zUpSel) - 1
+                zPp := array.get(zUpSel, j)
+                if zPp > 0 and math.abs(array.get(zUpC, zBi) - zPp) / zPp <= zGapP
+                    zOk := false
+        if zOk
+            array.push(zUpSel, array.get(zUpC, zBi))
+            array.push(zUpSelB, array.get(zUpK, zBi))
+
+    array.clear(zUsed)
+    zGuard := 0
+    while array.size(zDnSel) < zMaxN and zGuard < 400
+        zGuard += 1
+        zBi := -1
+        zBd := 1e18
+        if array.size(zDnC) > 0
+            for i = 0 to array.size(zDnC) - 1
+                if not array.includes(zUsed, i)
+                    float d = math.abs(array.get(zDnC, i) - close_)
+                    if d < zBd
+                        zBd := d
+                        zBi := i
+        if zBi < 0
+            break
+        array.push(zUsed, zBi)
+        zOk := true
+        if array.size(zDnSel) > 0
+            for j = 0 to array.size(zDnSel) - 1
+                zPp := array.get(zDnSel, j)
+                if zPp > 0 and math.abs(array.get(zDnC, zBi) - zPp) / zPp <= zGapP
+                    zOk := false
+        if zOk
+            array.push(zDnSel, array.get(zDnC, zBi))
+            array.push(zDnSelB, array.get(zDnK, zBi))
+
+    // ================= 第二段：原版 8 类分类（红绿线）=================
+    float[] cP = array.new_float()
+    int[]   cK = array.new_int()
+    int[]   cT = array.new_int()
+    int[]   cG = array.new_int()
+
+    // ---- 摆动高点 ----
+    if array.size(phP) > 0
+        for i = 0 to array.size(phP) - 1
+            float px = array.get(phP, i)
+            int   pb = array.get(phB, i)
+            if math.abs(px - close_) / close_ > nearF
+                if px < close_
+                    if inc_turn_sup
+                        array.push(cP, px)
+                        array.push(cK, 3)
+                        array.push(cT, 0)
+                        array.push(cG, f_grade(3, 0, wv, wc, wu, ww))
+                else
+                    [tc, ts, bk] = f_probe(pb, px, true, tol, brkP, rejP, rejWin, gapK)
+                    int kd = bk >= 1 and tc >= 1 ? 4 : ts >= 1 ? 1 : tc >= 1 ? 5 : 2
+                    int tv = kd == 1 ? ts : 0
+                    if f_on(kd)
+                        array.push(cP, px)
+                        array.push(cK, kd)
+                        array.push(cT, tv)
+                        array.push(cG, f_grade(kd, tv, wv, wc, wu, ww))
+
+    // ---- 摆动低点 ----
+    if array.size(plP) > 0
+        for i = 0 to array.size(plP) - 1
+            float px = array.get(plP, i)
+            int   pb = array.get(plB, i)
+            if math.abs(px - close_) / close_ > nearF
+                if px > close_
+                    if inc_turn_res
+                        array.push(cP, px)
+                        array.push(cK, 4)
+                        array.push(cT, 0)
+                        array.push(cG, f_grade(4, 0, wv, wc, wu, ww))
+                else
+                    [tc, ts, bk] = f_probe(pb, px, false, tol, brkP, rejP, rejWin, gapK)
+                    int kd = bk >= 1 and tc >= 1 ? 3 : ts >= 1 ? 6 : tc >= 1 ? 7 : 8
+                    int tv = kd == 6 ? ts : 0
+                    if f_on(kd)
+                        array.push(cP, px)
+                        array.push(cK, kd)
+                        array.push(cT, tv)
+                        array.push(cG, f_grade(kd, tv, wv, wc, wu, ww))
+
+    // ---- 第一轮：每类各自限额 + 间距去重 ----
+    int[] sel = array.new_int()
+    for k = 1 to 8
+        bool keepK = not (hideOpp and f_isOppK(k))
+        int[] pool = array.new_int()
+        if keepK
+            if array.size(cK) > 0
+                for i = 0 to array.size(cK) - 1
+                    if array.get(cK, i) == k
+                        array.push(pool, i)
+        int[] got = f_pick(pool, cP, cG, maxCat, gapF, close_, byDist, false, false)
+        if array.size(got) > 0
+            for i = 0 to array.size(got) - 1
+                array.push(sel, array.get(got, i))
+
+    // ---- 第二轮：现价上方 / 下方各自限额 ----
+    int[] semUp = f_pick(sel, cP, cG, maxUp, gapF, close_, byDist, true, true)
+    int[] semDn = f_pick(sel, cP, cG, maxDn, gapF, close_, byDist, true, false)
+
+    // ================= 第三段：绘制 =================
+    // 顺序刻意安排：先画档位版（结构背景），再画原版语义线，最后分界线压在最上层。
+
+    if showLvl
+        // ---- 画 ZigZag 折线 ----
+        if zShowZZ and array.size(zzP) > 1
+            for i = 0 to array.size(zzP) - 2
+                int b1 = array.get(zzB, i)
+                int b2 = array.get(zzB, i + 1)
+                if b2 >= zx0
+                    line zl = line.new(b1, array.get(zzP, i), b2, array.get(zzP, i + 1), color = zZZ, width = 1, style = line.style_solid)
+                    array.push(LNS, zl)
+
+        // ---- 画档位线：第1 = 离现价最近的 ----
+        if array.size(zUpSel) > 0
+            for i = 0 to array.size(zUpSel) - 1
+                float zpx = array.get(zUpSel, i)
+                f_hLineZ(zx0, zpx, "第" + str.tostring(i + 1) + "阻力", zRes, zLw)
+        if array.size(zDnSel) > 0
+            for i = 0 to array.size(zDnSel) - 1
+                float zpx = array.get(zDnSel, i)
+                f_hLineZ(zx0, zpx, "第" + str.tostring(i + 1) + "支撑", zSup, zLw)
+
+        // ---- 触及信号：用当前档位线回看历史 ----
+        if zShowSig
+            float[] zLvAll = array.new_float()
+            if array.size(zUpSel) > 0
+                for i = 0 to array.size(zUpSel) - 1
+                    array.push(zLvAll, array.get(zUpSel, i))
+            if array.size(zDnSel) > 0
+                for i = 0 to array.size(zDnSel) - 1
+                    array.push(zLvAll, array.get(zDnSel, i))
+            if array.size(zLvAll) > 0
+                int zNH   = array.size(sigB)
+                int zSigN = math.min(zSigLook, zNH)
+                for j = 0 to array.size(zLvAll) - 1
+                    float zpx = array.get(zLvAll, j)
+                    int   zGot = 0
+                    // 从最新往回扫，每条线数够「每条线最多几个信号」就停
+                    for k = 0 to zSigN - 1
+                        if zGot < zSigMax
+                            int   zbi = zNH - 1 - k
+                            float zlo = array.get(sigLo, zbi)
+                            float zhi = array.get(sigHi, zbi)
+                            float zcl = array.get(sigCl, zbi)
+                            float zop = array.get(sigOp, zbi)
+                            if zlo <= zpx * (1 + zSigT) and zcl > zpx and zop >= zpx
+                                label sg = label.new(array.get(sigB, zbi), zlo, text = "↑", style = label.style_label_up, color = color.new(color.black, 100), textcolor = zLong, size = size.small)
+                                array.push(LBS, sg)
+                                zGot += 1
+                            else if zhi >= zpx * (1 - zSigT) and zcl < zpx and zop <= zpx
+                                label sg = label.new(array.get(sigB, zbi), zhi, text = "↓", style = label.style_label_down, color = color.new(color.black, 100), textcolor = zShrt, size = size.small)
+                                array.push(LBS, sg)
+                                zGot += 1
+
+    if showSem
+        if array.size(semUp) > 0
+            for i = 0 to array.size(semUp) - 1
+                int idx = array.get(semUp, i)
+                int kd = array.get(cK, idx)
+                float px = array.get(cP, idx)
+                string txt = array.get(cT, idx) > 0 ? f_sub(kd) + "，测试=" + str.tostring(array.get(cT, idx)) : f_sub(kd)
+                f_hLine(x0, px, txt, f_col(kd), f_solid(kd), f_thinK(kd))
+        if array.size(semDn) > 0
+            for i = 0 to array.size(semDn) - 1
+                int idx = array.get(semDn, i)
+                int kd = array.get(cK, idx)
+                float px = array.get(cP, idx)
+                string txt = array.get(cT, idx) > 0 ? f_sub(kd) + "，测试=" + str.tostring(array.get(cT, idx)) : f_sub(kd)
+                f_hLine(x0, px, txt, f_col(kd), f_solid(kd), f_thinK(kd))
+
+    // ---- 手动价位追加（两套共用一份输入）----
+    if str.length(manualStr) > 0
+        string[] items = str.split(manualStr, ";")
+        for i = 0 to array.size(items) - 1
+            string it = str.replace_all(array.get(items, i), " ", "")
+            if str.length(it) > 0
+                string[] kv = str.split(it, "|")
+                float y = str.tonumber(array.get(kv, 0))
+                if not na(y)
+                    // 不写成 array.size(kv) > 1 ? array.get(kv, 1) : "手动价位"：
+                    // 万一三元两分支都求值，kv 只有价位的写法就会越界。用 if 显式赋值最稳。
+                    string t = "手动价位"
+                    if array.size(kv) > 1
+                        t := array.get(kv, 1)
+                    f_hLine(x0, y, t, manCol, true, false)
+
+    // ---- 多空分界线（最后创建 = 画在最上层，加粗实线）----
+    if showDiv and not na(divLv)
+        line dv = line.new(x0, divLv, bar_index + extBar, divLv, color = divCl, width = divW, style = line.style_solid)
+        array.push(LNS, dv)
+        if showLbl
+            string dtx = "多空分界 · 做多 ｜ 收盘跌破 " + str.tostring(divLv * (1 - divBk), format.mintick) + " 转空"
+            if trendDir == -1
+                dtx := "多空分界 · 做空 ｜ 收盘突破 " + str.tostring(divLv * (1 + divBk), format.mintick) + " 转多"
+            label dlb = label.new(bar_index + extBar, divLv, text = dtx, style = label.style_label_left, color = color.new(color.black, 100), textcolor = divCl, size = size.normal, textalign = text.align_left)
+            array.push(LBS, dlb)
+
+    // ---- 趋势状态标签（图表上方常驻，含档位版信息）----
+    if showStat
+        string sDir = "— 趋势：尚未判定"
+        if trendDir == 1
+            sDir := "📈 趋势：做多"
+        else if trendDir == -1
+            sDir := "📉 趋势：做空"
+        string sFlt = "全部画线同宽 · 未分层"
+        if trendDir != 0
+            string sNear = trendDir == 1 ? "做多 · 红" : "做空 · 绿"
+            string sFar  = trendDir == 1 ? "做空 · 绿" : "做多 · 红"
+            if hideOpp
+                sFlt := "只显示【" + sNear + "】一侧"
+            else if thinOpp
+                sFlt := "【" + sNear + "】粗线为主 ｜ 【" + sFar + "】细线为参考"
+            else
+                sFlt := "【" + sNear + "】与【" + sFar + "】同宽显示"
+        string sLv = ""
+        if not na(divLv)
+            sLv := "　｜　分界 " + str.tostring(divLv, format.mintick) + (trendDir == 1 ? "（跌破转空）" : "（突破转多）")
+        string sZ = "　｜　档位 " + str.tostring(array.size(zUpSel)) + " 上 / " + str.tostring(array.size(zDnSel)) + " 下"
+        if showLvl
+            sZ := sZ + "　ZigZag " + str.tostring(array.size(zzP)) + " 折点"
+        label st = label.new(x0, discHi + discAtr * 1.5, text = sDir + "　" + sFlt + sLv + sZ, style = label.style_label_right, color = color.new(color.black, 70), textcolor = divCl, size = size.small, textalign = text.align_left)
+        array.push(LBS, st)
+
+    // ---- 常驻配色图例 + 免责声明（图表右下角，始终显示）----
+    float discY = math.min(math.min(discLo, discLo2), close) - discAtr * 1.5
+    if showLeg
+        label lg = label.new(bar_index, discY + discAtr * 1.3, text = "🔴 红线 = 原版语义位 · 支撑·做多　｜　🟢 绿线 = 阻力·做空　｜　最粗实线 = 多空分界　｜　⟨粗线顺趋势 / 细线逆趋势⟩　｜　⚪ 灰线 = 档位版 第N阻力·第N支撑　｜　🔵 蓝折线 = ZigZag 摆动路径　🔵 ↑↓ = 触及信号", style = label.style_label_left, color = color.new(color.black, 80), textcolor = color.gray, size = size.tiny, textalign = text.align_left)
+        array.push(LBS, lg)
+    label dl = label.new(bar_index, discY, text = DISC_TXT, style = label.style_label_left, color = color.new(color.black, 75), textcolor = color.gray, size = size.tiny, textalign = text.align_left)
+    array.push(LBS, dl)
+
+// ======================= 免责声明 =======================
+// 本脚本（fufu BTCUSDT 15m 单画线 合并版）仅为技术分析辅助工具，不构成任何投资建议、
+// 交易推荐或收益承诺。加密货币市场波动剧烈、风险极高，任何依据本脚本作出的
+// 交易决策及其盈亏，均由使用者自行承担。作者不对因使用本脚本而产生的任何
+// 直接或间接损失承担责任。
